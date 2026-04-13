@@ -1,8 +1,7 @@
-package com.actimize.kafka.service;
+package com.ubs.dqs.idq_gsnowintg.service;
 
-import com.actimize.kafka.config.ConsumerProperties;
-import com.actimize.kafka.model.IncidentRecord;
-import jakarta.annotation.PostConstruct;
+import com.ubs.dqs.idq_gsnowintg.config.ConsumerProperties;
+import com.ubs.dqs.idq_gsnowintg.model.IncidentRecord;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -11,19 +10,17 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.PostConstruct;
 import java.io.IOException;
-import java.time.Instant;
 
 /**
  * Core Kafka listener.
  *
  * Spring manages the poll loop, thread lifecycle, and offset commits.
- * This class receives pre-polled records and delegates to
- * {@link MessageProcessorService} (parsing/filtering) and
- * {@link FileOutputService} (writing).
+ * Delegates to MessageProcessorService (parsing/filtering) and
+ * FileOutputService (writing).
  *
- * Duration enforcement is done via a simple wall-clock check on each record —
- * consistent with the original while(!closed && currentTimeMillis() > end) logic.
+ * Java 1.8 compatible.
  */
 @Slf4j
 @Service
@@ -38,25 +35,21 @@ public class KafkaConsumerService {
     private long endTimeMs;
 
     @PostConstruct
-    void init() {
+    public void init() {
         endTimeMs = System.currentTimeMillis() + props.getDurationMs();
         MDC.put("runId", stats.getRunId());
-        log.info("[RunID:{}] KafkaConsumerService initialised. Duration={}ms, Topic={}",
+        log.info("[RunID:{}] KafkaConsumerService initialised. Duration={}ms Topic={}",
             stats.getRunId(), props.getDurationMs(), props.getTopic());
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Listener
-    // ─────────────────────────────────────────────────────────────────────────
-
     @KafkaListener(
-        topics          = "${consumer.topic}",
-        groupId         = "${consumer.group-id}",
+        topics           = "#{consumerProperties.topic}",
+        groupId          = "#{consumerProperties.groupId}",
         containerFactory = "kafkaListenerContainerFactory"
     )
     public void onMessage(ConsumerRecord<String, String> record, Acknowledgment ack) {
 
-        // ── Duration check ────────────────────────────────────────────────────
+        // Duration guard
         if (System.currentTimeMillis() > endTimeMs) {
             log.info("[RunID:{}] ***Completed Duration — stopping consumer***", stats.getRunId());
             stats.markStopped();
@@ -67,17 +60,15 @@ public class KafkaConsumerService {
 
         String rawMessage = record.value();
 
-        // ── Process ───────────────────────────────────────────────────────────
         try {
             IncidentRecord incident = messageProcessor.process(rawMessage);
 
             if (incident == null) {
-                // Either JSON extraction failed OR filters did not match.
-                // MessageProcessorService logged the reason; we just count.
-                handleSkipped(rawMessage);
+                stats.incrementErrorCount();
             } else {
                 stats.incrementTotalChecked();
-                writeOutput(incident, rawMessage);
+                fileOutputService.writeHashRow(stats.getRunId(), incident);
+                fileOutputService.writeJsonDump(rawMessage);
                 stats.incrementFilteredCount();
             }
 
@@ -90,22 +81,6 @@ public class KafkaConsumerService {
         ack.acknowledge();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Helpers
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private void handleSkipped(String rawMessage) {
-        // If extractFirstJsonObject returned null it's a hard error;
-        // if filters didn't match it's a silent skip. We count both as
-        // "not written" — errorCount vs filteredOut is separated in stats.
-        stats.incrementErrorCount();
-    }
-
-    private void writeOutput(IncidentRecord incident, String rawJson) throws IOException {
-        fileOutputService.writeHashRow(stats.getRunId(), incident);
-        fileOutputService.writeJsonDump(rawJson);
-    }
-
     private void flushAndSummarise() {
         try {
             fileOutputService.flush();
@@ -113,13 +88,11 @@ public class KafkaConsumerService {
             log.error("[RunID:{}] Error flushing output files: {}", stats.getRunId(), e.getMessage());
         }
 
-        long sizeBytes = fileOutputService.outputFileSizeBytes();
-        long lineCount = fileOutputService.outputFileLineCount();
+        log.info("[RunID:{}] Consumer Output File size (bytes): {}",
+            stats.getRunId(), fileOutputService.outputFileSizeBytes());
+        log.info("[RunID:{}] Consumer Output File line count  : {}",
+            stats.getRunId(), fileOutputService.outputFileLineCount());
 
-        log.info("[RunID:{}] Consumer Output File size (bytes): {}", stats.getRunId(), sizeBytes);
-        log.info("[RunID:{}] Consumer Output File line count  : {}", stats.getRunId(), lineCount);
-
-        stats.markStopped();
         stats.logSummary();
     }
 }
