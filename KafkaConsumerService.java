@@ -17,15 +17,6 @@ import javax.annotation.PostConstruct;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Core Kafka listener.
- *
- * Spring manages the poll loop, thread lifecycle, and offset commits.
- * Delegates to MessageProcessorService (parsing/filtering) and
- * FileOutputService (writing).
- *
- * Java 1.8 compatible.
- */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -38,9 +29,7 @@ public class KafkaConsumerService {
     private final KafkaListenerEndpointRegistry  listenerRegistry;
     private final ApplicationContext             applicationContext;
 
-    private long          endTimeMs;
-    // Guard so shutdown logic runs only once even if multiple messages
-    // arrive in the same poll batch after the deadline.
+    private long endTimeMs;
     private final AtomicBoolean shutdownInitiated = new AtomicBoolean(false);
 
     @PostConstruct
@@ -58,7 +47,6 @@ public class KafkaConsumerService {
     )
     public void onMessage(ConsumerRecord<String, String> record, Acknowledgment ack) {
 
-        // Duration guard
         if (System.currentTimeMillis() > endTimeMs) {
             ack.acknowledge();
             initiateShutdown();
@@ -88,30 +76,33 @@ public class KafkaConsumerService {
         ack.acknowledge();
     }
 
-    /**
-     * Called once when the configured duration has elapsed.
-     * 1. Flushes and logs summary.
-     * 2. Stops the Kafka listener container (no more polls).
-     * 3. Exits the Spring application (JVM terminates cleanly).
-     */
     private void initiateShutdown() {
         if (!shutdownInitiated.compareAndSet(false, true)) {
-            return; // another thread already started shutdown
+            return;
         }
 
         log.info("[RunID:{}] ***Completed Duration — stopping consumer***", stats.getRunId());
         stats.markStopped();
-
         flushAndSummarise();
 
-        // Stop all Kafka listener containers so the poll loop ends immediately.
-        log.info("[RunID:{}] Stopping Kafka listener containers...", stats.getRunId());
-        listenerRegistry.stop();
+        // Shutdown musi byc w osobnym watku — wywolanie System.exit()
+        // z watku Kafka listener powoduje deadlock podczas zamykania kontekstu
+        Thread shutdownThread = new Thread(() -> {
+            try {
+                log.info("[RunID:{}] Stopping Kafka listener containers...", stats.getRunId());
+                listenerRegistry.stop();
 
-        // Shut down the Spring context and exit the JVM with code 0.
-        log.info("[RunID:{}] Shutting down Spring application...", stats.getRunId());
-        int exitCode = SpringApplication.exit(applicationContext, () -> 0);
-        System.exit(exitCode);
+                log.info("[RunID:{}] Shutting down Spring application...", stats.getRunId());
+                int exitCode = SpringApplication.exit(applicationContext, () -> 0);
+                System.exit(exitCode);
+            } catch (Exception e) {
+                log.error("[RunID:{}] Error during shutdown: {}", stats.getRunId(), e.getMessage(), e);
+                System.exit(1);
+            }
+        }, "consumer-shutdown-thread");
+
+        shutdownThread.setDaemon(false); // nie-daemon: JVM poczeka az watek skonczy
+        shutdownThread.start();
     }
 
     private void flushAndSummarise() {
