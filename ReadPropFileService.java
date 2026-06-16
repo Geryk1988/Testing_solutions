@@ -33,7 +33,7 @@ public class ReadPropFileService {
     @PostConstruct
     public void load() throws Exception {
         if (path == null) {
-            throw new IllegalArgumentException("System property 'params.propFileName' not provided");
+            throw new IllegalArgumentException("Required property 'runprops.path' not provided");
         }
 
         String fileName = Paths.get(path).getFileName().toString();
