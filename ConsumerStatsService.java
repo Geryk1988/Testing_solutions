@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -33,7 +34,9 @@ public class ConsumerStatsService {
 
     public ConsumerStatsService() {
         this.startTime = Instant.now();
-        this.runId     = System.currentTimeMillis() + "-" + (int)(Math.random() * 10_000);
+        // UUID gwarantuje unikalność — zgodne z zakomentowaną linią w oryginale:
+        // private final String runId = UUID.randomUUID().toString();
+        this.runId = UUID.randomUUID().toString();
         log.info("Consumer run started. RunID={}", runId);
     }
 
