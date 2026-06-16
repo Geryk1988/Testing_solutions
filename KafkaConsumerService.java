@@ -6,12 +6,16 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.MDC;
+import org.springframework.context.ApplicationContext;
+import org.springframework.boot.SpringApplication;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Core Kafka listener.
@@ -27,12 +31,17 @@ import java.io.IOException;
 @RequiredArgsConstructor
 public class KafkaConsumerService {
 
-    private final MessageProcessorService messageProcessor;
-    private final FileOutputService       fileOutputService;
-    private final ConsumerStatsService    stats;
-    private final ConsumerProperties      props;
+    private final MessageProcessorService        messageProcessor;
+    private final FileOutputService              fileOutputService;
+    private final ConsumerStatsService           stats;
+    private final ConsumerProperties             props;
+    private final KafkaListenerEndpointRegistry  listenerRegistry;
+    private final ApplicationContext             applicationContext;
 
-    private long endTimeMs;
+    private long          endTimeMs;
+    // Guard so shutdown logic runs only once even if multiple messages
+    // arrive in the same poll batch after the deadline.
+    private final AtomicBoolean shutdownInitiated = new AtomicBoolean(false);
 
     @PostConstruct
     public void init() {
@@ -51,10 +60,8 @@ public class KafkaConsumerService {
 
         // Duration guard
         if (System.currentTimeMillis() > endTimeMs) {
-            log.info("[RunID:{}] ***Completed Duration — stopping consumer***", stats.getRunId());
-            stats.markStopped();
             ack.acknowledge();
-            flushAndSummarise();
+            initiateShutdown();
             return;
         }
 
@@ -79,6 +86,32 @@ public class KafkaConsumerService {
         }
 
         ack.acknowledge();
+    }
+
+    /**
+     * Called once when the configured duration has elapsed.
+     * 1. Flushes and logs summary.
+     * 2. Stops the Kafka listener container (no more polls).
+     * 3. Exits the Spring application (JVM terminates cleanly).
+     */
+    private void initiateShutdown() {
+        if (!shutdownInitiated.compareAndSet(false, true)) {
+            return; // another thread already started shutdown
+        }
+
+        log.info("[RunID:{}] ***Completed Duration — stopping consumer***", stats.getRunId());
+        stats.markStopped();
+
+        flushAndSummarise();
+
+        // Stop all Kafka listener containers so the poll loop ends immediately.
+        log.info("[RunID:{}] Stopping Kafka listener containers...", stats.getRunId());
+        listenerRegistry.stop();
+
+        // Shut down the Spring context and exit the JVM with code 0.
+        log.info("[RunID:{}] Shutting down Spring application...", stats.getRunId());
+        int exitCode = SpringApplication.exit(applicationContext, () -> 0);
+        System.exit(exitCode);
     }
 
     private void flushAndSummarise() {
