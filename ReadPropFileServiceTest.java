@@ -78,6 +78,6 @@ class ReadPropFileServiceTest {
         service.setPath(null);
         assertThatThrownBy(() -> service.load())
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("propFileName");
+            .hasMessageContaining("runprops.path"); // poprawiony komunikat
     }
 }
