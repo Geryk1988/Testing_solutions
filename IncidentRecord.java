@@ -41,11 +41,11 @@ public class IncidentRecord {
     private String assignmentGroup;
 
     /**
-     * Produces the hash-delimited row written to the consumer output file,
-     * matching the original String.join("$", ...) output exactly.
+     * Produces the pipe-delimited row written to the consumer output file,
+     * Delimiter: | (pipe)
      */
     public String toHashRow() {
-        return String.join("$",
+        return String.join("|",
             nullSafe(number),
             nullSafe(serviceOffering),
             nullSafe(shortDescription),
